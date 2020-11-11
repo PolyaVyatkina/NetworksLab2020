@@ -16,6 +16,7 @@ print('Server is online')
 inputs = [server]
 outputs = []
 message_queues = {}
+buffer = {}
 
 
 def send_data(current_client, data):
@@ -30,48 +31,45 @@ def close_connection(user):
     inputs.remove(user)
     user.close()
     del message_queues[user]
-    print(f"Client {user} disconnected")
+    print(f"Client disconnected")
 
 
 def receive_bytes(client, length):
     received = 0
-    message = b''
-    while True:
-        try:
-            data = client.recv(length - received)
-            if received < length:
-                message += data
-                received += len(data)
-            elif message == b'':
-                print(f"Message is empty: {message}")
-                close_connection(client)
-            else:
-                return message
-        except IOError as ex:
-            if ex.errno != errno.EAGAIN and ex.errno != errno.EWOULDBLOCK:
-                print(f"Reading error: {ex}")
-                exit()
-            continue
+    message = buffer[client]['message']
+    data = client.recv(length - received)
+    message += data
+    received += len(data)
+    buffer[client]['length'] = length
+    buffer[client]['received'] = received
+    buffer[client]['message'] = message
 
 
 def listen_socket(user):
-    data = user.recv(HEADER_LENGTH)
-    if data == b'':
-        close_connection(user)
+    if user not in buffer.keys():
+        data = user.recv(HEADER_LENGTH)
+        if data == b'':
+            close_connection(user)
+            return
+        else:
+            message_length = int(data.decode('utf-8').strip())
+            print(f"message length: {message_length}")
+            buffer[user] = {'header': data, 'length': message_length, 'received': 0, 'message': b''}
+            receive_bytes(user, message_length)
+            if user not in outputs:
+                outputs.append(user)
     else:
-        message_length = int(data.decode('utf-8').strip())
-        print(f"message length: {message_length}")
-        message = receive_bytes(user, message_length)
-        message_queues[user].put(data + message)
-        if user not in outputs:
-            outputs.append(user)
+        receive_bytes(user, buffer[user]['length'] - buffer[user]['received'])
+    if buffer[user]['length'] == buffer[user]['received']:
+        message_queues[user].put(buffer[user]['header'] + buffer[user]['message'])
+        del buffer[user]
 
 
 def accept_sockets(readable, writable, exceptional):
     for _socket in readable:
         if _socket is server:
             client, addr = _socket.accept()
-            client.setblocking(0)
+            client.setblocking(False)
             inputs.append(client)
             message_queues[client] = queue.Queue()
             print(f"User [{addr}] connected")
@@ -96,4 +94,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
